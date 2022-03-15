@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.2
 ARG TRITON_VERSION=22.02
-ARG IMAGE=nvcr.io/nvidia/tritonserver:${TRITON_VERSION}-py3-min
+ARG TRITON_DISTRIUBTION=py3-min
+ARG IMAGE=nvcr.io/nvidia/tritonserver:${TRITON_VERSION}-${TRITON_DISTRIUBTION}
 FROM ${IMAGE}
+ARG TRITON_VERSION
+
+WORKDIR /workspace
 
 # Args
-ARG CORE_VER=main
+ARG CORE_VER=v0.1.1
 ARG RMM_VER=v21.12.00
 ARG CUDF_VER=v21.12.02
 ARG NVTAB_VER=main
@@ -13,251 +17,482 @@ ARG MODELS_VER=main
 ARG HUGECTR_VER=master
 ARG HUGECTR_BACKEND_VER=main
 ARG TF4REC_VER=main
+
+ARG ARROW_VER=5.0.0 \
+    CMAKE_VER=3.22.3 \
+    HADOOP_VER=3.3.2 \
+    HIREDIS_VER=1.0.2 \
+    HWLOC_VER=2.4.1 \
+    PROTOC_VER=3.19.4 \
+    RDKAFKA_VER=1.8.2 \
+    REDIS_PP_VER=1.3.3 \
+    ROCKSDB_VER=6.29.3 \
+    SPDLOG_VER=1.9.2
+
+ARG BUILD_HADOOP=true \
+    INSTALL_HDFS_CLIENT=true
+
+
+
+# -----------------------------------------------------------------------------
+#   OVERVIEW
 #
-# Envs
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:/usr/local/lib:/repos/dist/lib
-ENV DEBIAN_FRONTEND=noninteractive
-ENV CUDA_HOME=/usr/local/cuda
-ENV CUDA_PATH=$CUDA_HOME
-ENV CUDA_CUDA_LIBRARY=${CUDA_HOME}/lib64/stubs
-ENV PATH=${CUDA_HOME}/lib64/:${PATH}:${CUDA_HOME}/bin
-ENV PYTHONPATH=/usr/lib/python3.8/site-packages:$PYTHONPATH
+#   0 = Revise system configuration.
+#   1 = Third-party compilers and make tools.
+#   2 = Third-party packages that are frequently needed.
+#   3 = Dependencies of Merlin, Merlin NVTabular, Merlin Transformers4rec, etc.
+#   4 = Dependencies of Merlin HugeCTR
+#   5 = NVIDIA Merlin, Merlin NVTabular, Merlin Transformers4rec, Merlin Models
+#   6 = NVIDIA Merlin HugeCTR
+#   ...
+#   9 = Runtime customization.
+#
 
-# Install packages
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt update -y --fix-missing && \
-    apt install -y --no-install-recommends software-properties-common && \
+
+
+# -----------------------------------------------------------------------------
+#   [ 0 ]  Revise system configuration.
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -y --fix-missing && \
     apt-get install -y --no-install-recommends \
-        clang-format \
-        libboost-serialization-dev \
-        libcurl4-openssl-dev \
-        libssl-dev \
-        libtbb-dev \
-        protobuf-compiler \
-        python3-dev \
-        python3-pip \
-        rapidjson-dev &&\
+        # [ 1 ] Required to build CMake.
+            libssl-dev \
+        # [ 2 ] Required to build Protocol Buffers.
+            autoconf automake libtool \
+        # [ 3.2 ] Required to build Arrow.
+            libthrift-dev \
+            libboost-system-dev libboost-filesystem-dev \
+            # -- gtest (APT version incompatible, relying on arrow's auto-build function)
+            libsnappy-dev libbrotli-dev \
+            libssl-dev libgflags-dev \
+            # -- protobuf (other packages need newer version, built manually before)
+            rapidjson-dev \
+            zlib1g-dev liblz4-dev libzstd-dev \
+            libre2-dev libbz2-dev libutf8proc-dev \
+            # -- libgrpc, libgrpc++ (APT version is too old, relying on auto-build function)
+            # -- liborc (no APT package available, relying on auto-build function)
+            libc-ares-dev \
+            # -- aws-sdk-cpp (no APT package avalable, relying on auto-build function)
+            libcurl4-openssl-dev python3-dev python3-pip \
+        # [ 3.3 ] Required to build RAPIDS Memory Management.
+            python3-dev python3-pip \
+        # [ 3.4 ] Required to build RAPIDS cuDF.
+            python3-dev python3-pip \
+            zlib1g-dev \
+            # -- jitify, nvcomp, thrust, cub (no APT package available, relying on auto-build function)
+            # -- rmm (built manually, see above)
+            # -- brotli, lz4, zstd, re2 libc-ares, arrow (built manually, see above)
+            # -- dlpack, libcudacxx cuco gtest (no APT package available, relying on auto-build function)
+        # [ 4.2 ] Required to build RocksDB.
+            libgflags-dev \
+            zlib1g-dev libbz2-dev libsnappy-dev liblz4-dev libzstd-dev \
+        # [ 4.3 ] Required to build RdKafka.
+            zlib1g-dev libzstd-dev \
+            libssl-dev libsasl2-dev \
+        # [ 4.4 ] Required to build Hadoop.
+            default-jdk maven \
+            libpmem-dev \
+            libsasl2-dev libssl-dev \
+            libsnappy-dev libzstd-dev zlib1g-dev \
+        # [ 4.4 ] Required to run Hadoop.
+            openssh-server \
+        # [ 5.2 ] Required to build NVT Triton backend.
+            rapidjson-dev \
+        # [ 6 ] Required to build HugeCTR.
+            libtbb-dev clang-format && \
+    apt-get remove -y --purge cmake -y && \
     apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    # apt-get clean && \
+    # rm -rf /var/lib/apt/lists/* && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.8 10
 
-RUN ln -s /usr/bin/python3 /usr/bin/python
+ENV CUDA_HOME=/usr/local/cuda \
+    JAVA_HOME=/usr/lib/jvm/default-java
+ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/lib:${JAVA_HOME}/lib:${JAVA_HOME}/lib/server
 
-# Install multiple packages
-RUN pip install cupy-cuda115 nvidia-pyindex pybind11 pytest protobuf transformers==4.12 tensorflow-metadata 
-RUN pip install betterproto cachetools graphviz nvtx scipy sklearn
-RUN pip install pandas numba==0.55.1 numpy==1.21.5
-RUN pip install tritonclient[all] grpcio-channelz
-RUN pip install dask==2021.11.2 distributed==2021.11.2 dask[dataframe]==2021.11.2 dask-cuda
-RUN pip install git+https://github.com/rapidsai/asvdb.git@main
 
-# Install cmake
-RUN apt remove --purge cmake -y && wget http://www.cmake.org/files/v3.21/cmake-3.21.1.tar.gz && \
-    tar xf cmake-3.21.1.tar.gz && cd cmake-3.21.1 && ./configure && make && make install
+# Fix numba and numpy version for the next couple of steps.
+# TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+RUN python -m pip install \
+    numpy==1.21.5 \
+    numba==0.55.1
 
-# Install spdlog
-RUN git clone --branch v1.9.2 https://github.com/gabime/spdlog.git build-env && \
-    pushd build-env && \
-      mkdir build && cd build && cmake .. && make -j && make install && \
-    popd && \
-    rm -rf build-env
-   
-# Install arrow
-ENV ARROW_HOME=/usr/local
-RUN git clone --branch apache-arrow-5.0.0 --recurse-submodules https://github.com/apache/arrow.git build-env && \
-    pushd build-env && \
-      export PARQUET_TEST_DATA="${PWD}/cpp/submodules/parquet-testing/data" && \
-      export ARROW_TEST_DATA="${PWD}/testing/data" && \
-      pip install -r python/requirements-build.txt && \
-      mkdir cpp/release && \
-      pushd cpp/release && \
-        cmake -DCMAKE_INSTALL_PREFIX=${ARROW_HOME} \
-              -DCMAKE_INSTALL_LIBDIR=lib \
-              -DCMAKE_LIBRARY_PATH=${CUDA_CUDA_LIBRARY} \
-              -DARROW_FLIGHT=ON \
-              -DARROW_GANDIVA=OFF \
-              -DARROW_ORC=ON \
-              -DARROW_WITH_BZ2=ON \
-              -DARROW_WITH_ZLIB=ON \
-              -DARROW_WITH_ZSTD=ON \
-              -DARROW_WITH_LZ4=ON \
-              -DARROW_WITH_SNAPPY=ON \
-              -DARROW_WITH_BROTLI=ON \
-              -DARROW_PARQUET=ON \
-              -DARROW_PYTHON=ON \
-              -DARROW_PLASMA=ON \
-              -DARROW_BUILD_TESTS=ON \
-              -DARROW_CUDA=ON \
-              -DARROW_DATASET=ON \
-              -DARROW_HDFS=ON \
-              -DARROW_S3=ON \ 
-              .. && \
-        make -j$(nproc) && \
-        make install && \
-      popd && \
-      pushd python && \
-        export PYARROW_WITH_PARQUET=ON && \
-        export PYARROW_WITH_CUDA=ON && \
-        export PYARROW_WITH_ORC=ON && \
-        export PYARROW_WITH_DATASET=ON && \
-        export PYARROW_WITH_S3=ON && \
-        export PYARROW_WITH_HDFS=ON && \
-        python setup.py build_ext --build-type=release bdist_wheel && \
-        pip install dist/*.whl --no-deps --force-reinstall && \
-      popd && \
-    popd && \
-    rm -rf build-env
 
-# Install rmm
-ENV INSTALL_PREFIX=/usr
-RUN git clone https://github.com/rapidsai/rmm.git build-env && cd build-env/ && \
-    git checkout ${RMM_VER} && \
-    cd ..; \
-    pushd build-env && \
-    ./build.sh librmm && \
-    pip install python/. --no-deps && \
-    popd && \
-    rm -rf build-env
+# -----------------------------------------------------------------------------
+#   [ 1 ]   Build and install "newer" version CMake.
 
-# Install CUDF
-RUN git clone https://github.com/rapidsai/cudf.git build-env && cd build-env/ && \
-    git checkout ${CUDF_VER} && \
-    git submodule update --init --recursive && \
+RUN git clone --branch v${CMAKE_VER} --depth 1 https://github.com/Kitware/CMake.git cmake && \
+    cd cmake && \
+    ./bootstrap && \
+    make -j$(nproc) && \
+    make install && \
     cd .. && \
-    pushd build-env && \
-      export CUDF_HOME=${PWD} && \
-      export CUDF_ROOT=${PWD}/cpp/build/ && \
-      export CMAKE_LIBRARY_PATH=${CUDA_CUDA_LIBRARY} && \
-      export CUDAFLAGS=-Wno-error=unknown-pragmas && \
-      ./build.sh libcudf cudf dask_cudf --allgpuarch --cmake-args=\"-DCUDF_ENABLE_ARROW_S3=OFF\" && \
-    popd && \
-    rm -rf build-env
+    rm -rf cmake && \
+    echo "CMake version: $(cmake --version)"
 
-# Install Merlin Core
-RUN git clone https://github.com/NVIDIA-Merlin/core.git /core/ && \
-    cd /core/ && git checkout ${CORE_VER} && pip install -e . --no-deps
-ENV PYTHONPATH=/core:$PYTHONPATH
 
-# Install NVTabular
-ENV PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION='python'
-RUN git clone https://github.com/NVIDIA-Merlin/NVTabular.git /nvtabular/ && \
-    cd /nvtabular/ && git checkout ${NVTAB_VER} && pip install -e . --no-deps
-ENV PYTHONPATH=/nvtabular:$PYTHONPATH
 
-# Install Transformers4Rec
-RUN pip install transformers==4.12
-RUN git clone https://github.com/NVIDIA-Merlin/Transformers4Rec.git /transformers4rec && \
-    cd /transformers4rec/ && git checkout ${TF4REC_VER} && pip install -e . --no-deps
-ENV PYTHONPATH=/transformers4rec:$PYTHONPATH
+# -----------------------------------------------------------------------------
+#   [ 2 ]   Build and install protocol buffers (required by Arrow and HugeCTR/HDFS)
 
-# Install Models
-RUN git clone https://github.com/NVIDIA-Merlin/Models.git /models/ && \
-    cd /models/ && git checkout ${MODELS_VER} && pip install -e . --no-deps;
-ENV PYTHONPATH=/models:$PYTHONPATH
+RUN git clone --branch v${PROTOC_VER} --depth 1 https://github.com/protocolbuffers/protobuf.git protobuf && \
+    cd protobuf && \
+    git submodule update --init --recursive && \
+    ./autogen.sh && \
+    ./configure && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf protobuf && \
+    ldconfig && \
+    echo "Protocol Buffers version: $(protoc --version)"
 
-# Install NVTabular Triton Backend
-ARG TRITON_VERSION
-RUN git clone https://github.com/NVIDIA-Merlin/nvtabular_triton_backend.git build-env && \
-    cd build-env && git checkout ${NVTAB_BACKEND_VER} && cd .. && \
-    pushd build-env && \
-      mkdir build && \
-      cd build && \
-      cmake -Dpybind11_DIR=/usr/local/lib/python3.8/dist-packages/pybind11/share/cmake/pybind11 \
-        -D TRITON_COMMON_REPO_TAG="r$TRITON_VERSION"    \
-        -D TRITON_CORE_REPO_TAG="r$TRITON_VERSION"      \
-        -D TRITON_BACKEND_REPO_TAG="r$TRITON_VERSION" .. \
-      && make -j && \
-      mkdir -p /opt/tritonserver/backends/nvtabular && \
-      cp libtriton_nvtabular.so /opt/tritonserver/backends/nvtabular/ && \
-    popd && \
-    rm -rf build-env 
 
-# Install Hiredis
-RUN mkdir -p /var/tmp && cd /var/tmp && git clone --depth=1 https://github.com/redis/hiredis.git && cd - && \
-    cd /var/tmp/hiredis && \
-    mkdir build && cd build && \
+
+# -----------------------------------------------------------------------------
+#   [ 3.1 ]   Build and install spdlog.
+
+RUN git clone --branch v${SPDLOG_VER} --depth 1 https://github.com/gabime/spdlog.git spdlog && \
+    mkdir spdlog/build && \
+    cd spdlog/build && \
     cmake .. && \
-    make -j$(nproc) && make install && \
-    rm -rf /var/tmp/hiredis
+    make -j && \
+    make install && \
+    cd ../.. && \
+    rm -rf spdlog
 
-# Install redis++
-RUN mkdir -p /var/tmp && cd /var/tmp && git clone --depth=1 -b 1.3.2 https://github.com/sewenew/redis-plus-plus.git && cd - && \
-    cd /var/tmp/redis-plus-plus && \
-    mkdir build && cd build && \
+
+
+# -----------------------------------------------------------------------------
+#   [ 3.2 ]   Build and install CUDA-compatible version of Apache Arrow.
+
+RUN git clone --branch apache-arrow-${ARROW_VER} --depth 1 https://github.com/apache/arrow.git arrow && \
+    cd arrow && \
+    git submodule update --init --recursive && \
+    export PARQUET_TEST_DATA="${PWD}/cpp/submodules/parquet-testing/data" && \
+    export ARROW_TEST_DATA="${PWD}/testing/data" && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    python -m pip install -r python/requirements-build.txt && \
+    mkdir cpp/build && \
+    cd cpp/build && \
+    cmake \
+        # Generic parameters.
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_LIBRARY_PATH=${CUDA_HOME}/lib64/stubs \
+        # Compile and link options.
+            # TODO: Really need both?
+            ARROW_BUILD_STATIC=ON \
+            ARROW_BUILD_SHARED=ON \
+        # Test and benchmark options
+            # TODO: Really need?
+            -DARROW_BUILD_TESTS=ON \
+            -DARROW_BUILD_BENCHMARKS=OFF \
+        # Lint options
+        # Check options
+        # Project component options
+            -DARROW_CUDA=ON \
+            -DARROW_DATASET=ON \
+            -DARROW_FLIGHT=ON \
+            -DARROW_GANDIVA=OFF \
+            -DARROW_HDFS=ON \
+            -DARROW_ORC=ON \
+            -DARROW_PLASMA=ON \
+            -DARROW_PARQUET=ON \
+            -DARROW_PYTHON=ON \
+            -DARROW_S3=ON \
+        # Thirdparty toolchain options
+            -DARROW_DEPENDENCY_SOURCE=AUTO \
+            -DARROW_WITH_BROTLI=ON \
+            -DARROW_WITH_BZ2=ON \
+            -DARROW_WITH_LZ4=ON \
+            -DARROW_WITH_SNAPPY=ON \
+            -DARROW_WITH_ZLIB=ON \
+            -DARROW_WITH_ZSTD=ON \
+        # Parquet options
+        # Gandiva options
+        # Advanced developer options
+        .. && \
+    make -j$(nproc) && \
+    make install && \
+    cd ../../python && \
+    export PYARROW_WITH_PARQUET=ON && \
+    export PYARROW_WITH_CUDA=ON && \
+    export PYARROW_WITH_ORC=ON && \
+    export PYARROW_WITH_DATASET=ON && \
+    export PYARROW_WITH_S3=ON && \
+    export PYARROW_WITH_HDFS=ON && \
+    python setup.py build_ext --build-type=release bdist_wheel && \
+    python -m pip install dist/*.whl --no-deps --force-reinstall && \
+    cd ../.. && \
+    rm -rf arrow && \
+    python -c 'import pyarrow; print("PyArrow version:", pyarrow.__version__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 3.3 ]   Build and install RAPIDS Memory Manager.
+
+RUN git clone --branch ${RMM_VER} --depth 1 https://github.com/rapidsai/rmm.git rmm && \
+    cd rmm && \
+    export INSTALL_PREFIX=/usr/local && \
+    ./build.sh librmm && \
+    python -m pip install python/. --no-deps && \
+    cd .. && \
+    rm -rf rmm && \
+    LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:$(dirname $(find / -name 'libcuda.so.1' | head -n 1)) && \
+    python -c 'import rmm; print("RAPIDS MM version:", rmm.__version__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 3.4 ]   Build and install RAPIDS cuDF.
+
+RUN git clone --branch ${CUDF_VER} --depth 1 https://github.com/rapidsai/cudf.git cudf && \
+    cd cudf && \
+    git submodule update --init --recursive && \
+    export CUDF_HOME=${PWD} && \
+    export CUDF_ROOT=${PWD}/cpp/build/ && \
+    export CMAKE_LIBRARY_PATH=${CUDA_HOME}/lib64/stubs && \
+    export CUDAFLAGS=-Wno-error=unknown-pragmas && \
+    export INSTALL_PREFIX=/usr/local && \
+    ./build.sh libcudf cudf dask_cudf --allgpuarch --cmake-args='"-DCUDF_ENABLE_ARROW_S3=OFF"' && \
+    cd .. && \
+    rm -rf cudf && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    # New version depends on cupy-cuda116, which is not yet available yet. cupy will build it directly.
+    python -m pip install \
+        pandas==1.3.5 \
+        cupy-cuda115 typing_extensions \
+        cachetools nvtx protobuf \
+        dask==2021.11.2 distributed==2021.11.2 dask[dataframe]==2021.11.2 dask-cuda && \
+    LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:$(dirname $(find / -name 'libcuda.so.1' | head -n 1)) && \
+    python -c 'import cudf; print("RAPIDS cuDF version:", cudf.__version__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 4.1 ]   Build and install Redis native client.
+
+RUN git clone --branch v${HIREDIS_VER} --depth 1 https://github.com/redis/hiredis.git hiredis && \
+    mkdir hiredis/build && \
+    cd hiredis/build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    cd ../.. && \
+    rm -rf hiredis
+
+RUN git clone --branch ${REDIS_PP_VER} --depth 1 https://github.com/sewenew/redis-plus-plus.git redis_pp && \
+    mkdir redis_pp/build && \
+    cd redis_pp/build && \
     cmake -DREDIS_PLUS_PLUS_CXX_STANDARD=17 .. && \
-    make -j$(nproc) && make install && \
-    rm -rf /var/tmp/redis-plus-plus
+    make -j$(nproc) && \
+    make install && \
+    cd ../.. && \
+    rm -rf redis_pp
 
-# Install RocksDB
-RUN mkdir -p /var/tmp && cd /var/tmp && git clone --depth=1 https://github.com/facebook/rocksdb.git && cd - && \
-    cd /var/tmp/rocksdb && \
+
+
+# -----------------------------------------------------------------------------
+#   [ 4.2 ]   Build and install RocksDB.
+
+RUN git clone --branch v${ROCKSDB_VER} --depth 1 https://github.com/facebook/rocksdb.git rocksdb && \
+    cd rocksdb && \
     PORTABLE=1 make -j$(nproc) shared_lib && \
     make install-shared && \
-    rm -rf /var/tmp/rocksdb
-    
-# Install LibRdKafka
-RUN apt-get update -y && \
-    DEBIAN_FRONTEND=noninteractive && apt-get install -y --no-install-recommends libssl-dev libsasl2-dev liblz4-dev libzstd-dev && \
-    mkdir -p /var/tmp && cd /var/tmp && git clone --depth 1 -b v1.8.2 https://github.com/edenhill/librdkafka.git && cd - && \
-    cd /var/tmp/librdkafka && \
-    ./configure && make -j$(nproc) && make install && \
-    rm -rf /var/tmp/librdkafka
+    cd .. && \
+    rm -rf rocksdb
 
-ARG INSTALL_HDFS=false
-RUN if [ "$INSTALL_HDFS" == "true" ]; then \
-    mkdir -p /var/tmp && cd /var/tmp && wget https://download.java.net/java/GA/jdk16.0.2/d4a915d82b4c4fbb9bde534da945d746/7/GPL/openjdk-16.0.2_linux-x64_bin.tar.gz && \
-    mkdir -p /usr/java && tar -zxvf ./openjdk-16.0.2_linux-x64_bin.tar.gz -C /usr/java &&  \
-    rm -rf ./openjdk-16.0.2_linux-x64_bin.tar.gz && \
-    mkdir -p /var/tmp && cd /var/tmp && wget https://archive.apache.org/dist/hadoop/common/hadoop-3.3.1/hadoop-3.3.1.tar.gz && \
-    tar -zxvf ./hadoop-3.3.1.tar.gz && rm -rf hadoop-3.3.1.tar.gz && \
-    cp ./hadoop-3.3.1/lib/native/libhdfs.so.0.0.0 /usr/local/lib/ && cp hadoop-3.3.1/include/hdfs.h /usr/local/include/ && \
-    mv ./hadoop-3.3.1 /usr/local/hadoop && cd /usr/local/lib/ && ln -s libhdfs.so.0.0.0 libhdfs.so; \
-fi
 
-ENV JAVA_HOME=/usr/java/jdk-16.0.2
-ENV PATH=$JAVA_HOME/bin:$PATH
-ENV LD_LIBRARY_PATH=$JAVA_HOME/lib/server
-ENV HADOOP_HOME=/usr/local/hadoop
-ENV PATH=$PATH:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
 
-# Arguments "_XXXX" are only valid when $HUGECTR_DEV_MODE==false
+# -----------------------------------------------------------------------------
+#   [ 4.3 ]   Build and install RdKafka.
+
+RUN git clone --branch v${RDKAFKA_VER} --depth 1 https://github.com/edenhill/librdkafka.git rdkafka && \
+    cd rdkafka && \
+    ./configure --enable-static && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf rdkafka
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 4.4 ]   Build and install hadoop + HDFS native client.
+
+# TODO: There is a potential conflict with protocol buffers. The native package will be overriden by the python package.
+
+ENV HADOOP_HOME=/opt/hadoop
+ENV PATH=${PATH}:${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin \
+    HDFS_NAMENODE_USER=root \
+    HDFS_SECONDARYNAMENODE_USER=root \
+    HDFS_DATANODE_USER=root \
+    YARN_RESOURCEMANAGER_USER=root \
+    YARN_NODEMANAGER_USER=root \
+    # Tackles with ThreadReaper stack overflow issues: https://bugs.openjdk.java.net/browse/JDK-8153057
+    LIBHDFS_OPTS='-Djdk.lang.processReaperUseDefaultStackSize=true' \
+    # Tackles with JVM setting error signals that UCX library will check (GitLab issue #425).
+    UCX_ERROR_SIGNALS='' \
+    CLASSPATH=${CLASSPATH}:\
+/opt/hadoop/etc/hadoop/*:\
+/opt/hadoop/share/hadoop/common/*:\
+/opt/hadoop/share/hadoop/common/lib/*:\
+/opt/hadoop/share/hadoop/hdfs/*:\
+/opt/hadoop/share/hadoop/hdfs/lib/*:\
+/opt/hadoop/share/hadoop/mapreduce/*:\
+/opt/hadoop/share/hadoop/yarn/*:\
+/opt/hadoop/share/hadoop/yarn/lib/*
+
+COPY install-hadoop.sh install-hadoop.sh
+RUN if [[ "${BUILD_HADOOP}" == "true" ]]; then \
+        git clone --branch rel/release-${HADOOP_VER} --depth 1 https://github.com/apache/hadoop.git hadoop && \
+        cd hadoop && \
+        # Temporarily adjust name resolution for jboss repository. NVIDIA IT ticket number: "INC0866408"
+        if [[ ! $(curl --connect-timeout 5 repository.jboss.org) ]] 2>/dev/null; then \
+            echo "Unable to connect to repository.jboss.org. Disabling..." && \
+            echo '127.0.0.1 repository.jboss.org' >> /etc/hosts \
+        ; fi && \
+        mvn clean package -Pdist,native -DskipTests -Dtar -Dmaven.javadoc.skip=true \
+            -Drequire.snappy -Drequire.zstd -Drequire.openssl -Drequire.pmdk && \
+        mv hadoop-dist/target/hadoop-${HADOOP_VER}.tar.gz .. && \
+        cd .. && \
+        rm -rf hadoop /root/.m2 \
+    ; fi && \
+    if [[ "${INSTALL_HDFS_CLIENT}" == "true" ]]; then \
+        ./install-hadoop.sh \
+    ; fi
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 5.1 ]   Build and install NVIDIA Merlin Core.
+
+RUN git clone --branch ${CORE_VER} --depth 1 https://github.com/NVIDIA-Merlin/core.git /core && \
+    cd /core && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    python -m pip install --disable-pip-version-check -r requirements.txt && \
+    python -m pip install --disable-pip-version-check --no-deps -e .
+ENV PYTHONPATH=${PYTHONPATH}:/core
+RUN python -c 'import merlin.core as mc; print("Merlin Core version:", mc.__version__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 5.2 ]   Build and install NVIDIA Merlin NVTabular.
+
+ENV PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION='python'
+RUN git clone --branch ${NVTAB_VER} --depth 1 https://github.com/NVIDIA-Merlin/NVTabular.git /nvtabular && \
+    cd /nvtabular && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    python -m pip install --disable-pip-version-check $(cat requirements.txt | grep -v merlin-core) && \
+    python -m pip install --disable-pip-version-check --no-deps -e . && \
+    # Missing dependency required for running NVT.
+    python -m pip install --disable-pip-version-check scipy
+ENV PYTHONPATH=${PYTHONPATH}:/nvtabular
+RUN python -c 'import nvtabular as nvt; print("Merlin NVTabular version:", nvt.__version__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 5.3 ]   Build and install NVIDIA Merlin Transformers-4-Rec.
+RUN git clone --branch ${TF4REC_VER} --depth 1 https://github.com/NVIDIA-Merlin/Transformers4Rec.git /transformers4rec && \
+    cd /transformers4rec && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    python -m pip install --disable-pip-version-check $(cat requirements/base.txt | grep -v merlin-core) && \
+    python -m pip install --disable-pip-version-check --no-deps -e .
+ENV PYTHONPATH=${PYTHONPATH}:/transformers4rec
+RUN python -c 'import transformers4rec as t4rec; print("Merlin T4Rec version:", t4rec.__version__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 5.4 ]   Build and install NVIDIA Merlin Models.
+RUN git clone --branch ${MODELS_VER} --depth 1 https://github.com/NVIDIA-Merlin/Models.git /models && \
+    cd /models && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    python -m pip install --disable-pip-version-check $(cat requirements/base.txt | grep -v merlin-core) && \
+    python -m pip install --disable-pip-version-check --no-deps -e .
+ENV PYTHONPATH=${PYTHONPATH}:/models
+RUN python -c 'import merlin.models as mm; print("Merlin Models:", mm.__path__)'
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 5.5 ]   Build and install NVIDIA NVTabular backend for NVIDIA Triton.
+RUN git clone --branch ${NVTAB_BACKEND_VER} --depth 1 https://github.com/NVIDIA-Merlin/nvtabular_triton_backend.git nvt_backend && \
+    mkdir nvt_backend/build && \
+    cd nvt_backend/build && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    python -m pip install --disable-pip-version-check pybind11 && \
+    cmake -Dpybind11_DIR=/usr/local/lib/python3.8/dist-packages/pybind11/share/cmake/pybind11 \
+        -D TRITON_COMMON_REPO_TAG="r${TRITON_VERSION}"    \
+        -D TRITON_CORE_REPO_TAG="r${TRITON_VERSION}"      \
+        -D TRITON_BACKEND_REPO_TAG="r${TRITON_VERSION}" .. && \
+    make -j$(nproc) && \
+    mkdir -p /opt/tritonserver/backends/nvtabular && \
+    cp libtriton_nvtabular.so /opt/tritonserver/backends/nvtabular && \
+    cd ../.. && \
+    rm -rf nvt_backend
+
+
+
+# -----------------------------------------------------------------------------
+#   [ 6 ]   Build and install NVIDIA Merlin HugeCTR.
+
+# Arguments "_XXXX" are only valid when ${HUGECTR_DEV_MODE}==false
 ARG HUGECTR_DEV_MODE=false
 ARG _HUGECTR_REPO="github.com/NVIDIA-Merlin/HugeCTR.git"
 ARG _HUGECTR_BACKEND_REPO="github.com/triton-inference-server/hugectr_backend"
-
 ARG _CI_JOB_TOKEN=""
 
-# Install HugeCTR
-RUN if [ "$HUGECTR_DEV_MODE" == "false" ]; then \
-      git clone https://${_CI_JOB_TOKEN}${_HUGECTR_REPO} /hugectr && cd /hugectr && git checkout ${HUGECTR_VER} && \
-      git submodule update --init --recursive && \
-      mkdir -p build && cd build &&\
-      cmake -DCMAKE_BUILD_TYPE=Release -DSM="60;61;70;75;80" -DENABLE_INFERENCE=ON .. && \
-      make -j$(nproc) && make install && \
-      chmod +x /usr/local/hugectr/bin/*; \
-    fi
+# Build & install HugeCTR itself.
+ARG HUGECTR_HOME=/usr/local/hugectr
+RUN if [[ "${HUGECTR_DEV_MODE}" == "false" ]]; then \
+        git clone --branch ${HUGECTR_VER} --depth 1 https://${_CI_JOB_TOKEN}${_HUGECTR_REPO} hugectr && \
+        cd hugectr && \
+        git submodule update --init --recursive && \
+        mkdir build && \
+        cd build && \
+        if [[ -f /usr/local/lib/libhdfs.so ]]; then \
+            cmake -DCMAKE_BUILD_TYPE=Release -DSM="60;61;70;75;80" -DENABLE_INFERENCE=ON -DENABLE_HDFS=ON .. \
+        else \
+            cmake -DCMAKE_BUILD_TYPE=Release -DSM="60;61;70;75;80" -DENABLE_INFERENCE=ON .. \
+        ; fi && \
+        make -j$(nproc) && \
+        make install && \
+        chmod +x ${HUGECTR_HOME}/bin/* && \
+        chmod +x ${HUGECTR_HOME}/lib/*.so && \
+        cd ../.. \
+        #&& \
+        #rm -rf hugectr \
+    ; fi
 
-ENV CPATH=/usr/local/hugectr/include:$CPATH
-ENV LIBRARY_PATH=/usr/local/hugectr/lib:$LIBRARY_PATH
-ENV LD_LIBRARY_PATH=/usr/local/hugectr/lib:$LD_LIBRARY_PATH
-ENV PATH=/usr/local/hugectr/bin:$PATH
+ENV PATH=$PATH:${HUGECTR_HOME}/bin \
+    LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${HUGECTR_HOME}/lib \
+    PYTHONPATH=${PYTHONPATH}:${HUGECTR_HOME}/lib \
+    CPATH=${CPATH}:${HUGECTR_HOME}/include
 
-RUN if [ "$HUGECTR_DEV_MODE" == "false" ]; then \
-      git clone https://${_CI_JOB_TOKEN}${_HUGECTR_BACKEND_REPO} /repos/hugectr_inference_backend && cd /repos/hugectr_inference_backend &&  \
-      git checkout ${HUGECTR_BACKEND_VER} && \
-      mkdir -p build && cd build && \
-      cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr/local/hugectr \
-            -DTRITON_COMMON_REPO_TAG="r$TRITON_VERSION" \
-            -DTRITON_CORE_REPO_TAG="r$TRITON_VERSION" \
-            -DTRITON_BACKEND_REPO_TAG="r$TRITON_VERSION" .. && \
-      make -j$(nproc) && make install && \
-      rm -rf /repos/hugectr_inference_backend; \
-    fi
+RUN rm -rf hugectr && \
+    if [ "${HUGECTR_DEV_MODE}" == "false" ]; then \
+        git clone --branch ${HUGECTR_BACKEND_VER} --depth 1 https://${_CI_JOB_TOKEN}${_HUGECTR_BACKEND_REPO} hugectr_triton_backend && \
+        mkdir hugectr_triton_backend/build && \
+        cd hugectr_triton_backend/build && \
+        cmake \
+            -DCMAKE_INSTALL_PREFIX:PATH=${HUGECTR_HOME} \
+            -DTRITON_COMMON_REPO_TAG="r${TRITON_VERSION}" \
+            -DTRITON_CORE_REPO_TAG="r${TRITON_VERSION}" \
+            -DTRITON_BACKEND_REPO_TAG="r${TRITON_VERSION}" .. && \
+        make -j$(nproc) && \
+        make install \
+    ; fi
 
-RUN ln -s /usr/local/hugectr/backends/hugectr /opt/tritonserver/backends/
 
-# Clean up
-RUN rm -rf /repos
+
+# -----------------------------------------------------------------------------
+#   [ 9 ]  Runtime customization.
 
 HEALTHCHECK NONE
 CMD ["/bin/bash"]
