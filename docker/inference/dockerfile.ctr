@@ -30,8 +30,8 @@ ARG ARROW_VER=5.0.0 \
     ROCKSDB_VER=6.29.3 \
     SPDLOG_VER=1.9.2
 
-ARG BUILD_HADOOP=true \
-    INSTALL_HDFS_CLIENT=true
+ARG INSTALL_HDFS=true \
+    BUILD_HADOOP=true
 
 
 
@@ -349,10 +349,10 @@ ENV PATH=${PATH}:${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin \
 
 # TODO: There is a potential conflict with protocol buffers. The native package will be overriden by the python package.
 COPY *-hadoop.sh ./
-RUN if [[ "${BUILD_HADOOP}" == "true" || "${INSTALL_HDFS_CLIENT}" == "true" ]]; then \
+RUN if [[ "${INSTALL_HDFS}" == "true" || "${BUILD_HADOOP}" == "true" ]]; then \
         ./build-hadoop.sh "${HADOOP_VER}" \
     ; fi && \
-    if [[ "${INSTALL_HDFS_CLIENT}" == "true" ]]; then \
+    if [[ "${INSTALL_HDFS}" == "true" ]]; then \
         ./install-hadoop.sh "${HADOOP_VER}" \
     ; fi
 
