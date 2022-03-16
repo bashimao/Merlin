@@ -104,8 +104,8 @@ RUN apt-get update -y --fix-missing && \
             libtbb-dev clang-format && \
     apt-get remove -y --purge cmake -y && \
     apt-get autoremove -y && \
-    # apt-get clean && \
-    # rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.8 10
 
 ENV CUDA_HOME=/usr/local/cuda \
