@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.2
 ARG TRITON_VERSION=22.02
+#ARG TRITON_DISTRIUBTION=py3
 ARG TRITON_DISTRIUBTION=py3-min
 ARG IMAGE=nvcr.io/nvidia/tritonserver:${TRITON_VERSION}-${TRITON_DISTRIUBTION}
 FROM ${IMAGE}
@@ -114,7 +115,7 @@ ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/lib:${JAVA_HOME}/lib:${JAVA_HO
 
 # Fix numba and numpy version for the next couple of steps.
 # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
-RUN python -m pip install \
+RUN python -m pip install --disable-pip-version-check \
     numpy==1.21.5 \
     numba==0.55.1
 
@@ -173,7 +174,7 @@ RUN git clone --branch apache-arrow-${ARROW_VER} --depth 1 https://github.com/ap
     export PARQUET_TEST_DATA="${PWD}/cpp/submodules/parquet-testing/data" && \
     export ARROW_TEST_DATA="${PWD}/testing/data" && \
     # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
-    python -m pip install -r python/requirements-build.txt && \
+    python -m pip install --disable-pip-version-check -r python/requirements-build.txt && \
     mkdir cpp/build && \
     cd cpp/build && \
     cmake \
@@ -224,7 +225,7 @@ RUN git clone --branch apache-arrow-${ARROW_VER} --depth 1 https://github.com/ap
     export PYARROW_WITH_S3=ON && \
     export PYARROW_WITH_HDFS=ON && \
     python setup.py build_ext --build-type=release bdist_wheel && \
-    python -m pip install dist/*.whl --no-deps --force-reinstall && \
+    python -m pip install --disable-pip-version-check --no-deps --force-reinstall dist/*.whl && \
     cd ../.. && \
     rm -rf arrow && \
     python -c 'import pyarrow; print("PyArrow version:", pyarrow.__version__)'
@@ -238,7 +239,7 @@ RUN git clone --branch ${RMM_VER} --depth 1 https://github.com/rapidsai/rmm.git 
     cd rmm && \
     export INSTALL_PREFIX=/usr/local && \
     ./build.sh librmm && \
-    python -m pip install python/. --no-deps && \
+    python -m pip install --disable-pip-version-check --no-deps python/. && \
     cd .. && \
     rm -rf rmm && \
     LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:$(dirname $(find / -name 'libcuda.so.1' | head -n 1)) && \
@@ -252,23 +253,25 @@ RUN git clone --branch ${RMM_VER} --depth 1 https://github.com/rapidsai/rmm.git 
 RUN git clone --branch ${CUDF_VER} --depth 1 https://github.com/rapidsai/cudf.git cudf && \
     cd cudf && \
     git submodule update --init --recursive && \
+    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
+    # New version depends on cupy-cuda116, which is not yet available yet. cupy will build it directly.
+    python -m pip install --disable-pip-version-check \
+        pandas==1.3.5 \
+        cupy-cuda115 typing_extensions \
+        cachetools nvtx protobuf \
+        dask==2021.11.2 distributed==2021.11.2 dask[dataframe]==2021.11.2 dask-cuda && \
     export CUDF_HOME=${PWD} && \
     export CUDF_ROOT=${PWD}/cpp/build/ && \
     export CMAKE_LIBRARY_PATH=${CUDA_HOME}/lib64/stubs && \
     export CUDAFLAGS=-Wno-error=unknown-pragmas && \
     export INSTALL_PREFIX=/usr/local && \
-    ./build.sh libcudf cudf dask_cudf --allgpuarch --cmake-args='"-DCUDF_ENABLE_ARROW_S3=OFF"' && \
+    ./build.sh libcudf cudf dask_cudf --allgpuarch '--cmake-args="-DCUDF_ENABLE_ARROW_S3=OFF"' && \
+    python -m pip install --disable-pip-version-check --no-deps python/cudf/. python/dask_cudf/. && \
     cd .. && \
     rm -rf cudf && \
-    # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
-    # New version depends on cupy-cuda116, which is not yet available yet. cupy will build it directly.
-    python -m pip install \
-        pandas==1.3.5 \
-        cupy-cuda115 typing_extensions \
-        cachetools nvtx protobuf \
-        dask==2021.11.2 distributed==2021.11.2 dask[dataframe]==2021.11.2 dask-cuda && \
     LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:$(dirname $(find / -name 'libcuda.so.1' | head -n 1)) && \
-    python -c 'import cudf; print("RAPIDS cuDF version:", cudf.__version__)'
+    python -c 'import cudf; print("RAPIDS cuDF version:", cudf.__version__)' && \
+    python -c 'import dask_cudf; print("RAPIDS Dask cuDF version:", dask_cudf.__version__)'
 
 
 
@@ -323,8 +326,6 @@ RUN git clone --branch v${RDKAFKA_VER} --depth 1 https://github.com/edenhill/lib
 # -----------------------------------------------------------------------------
 #   [ 4.4 ]   Build and install hadoop + HDFS native client.
 
-# TODO: There is a potential conflict with protocol buffers. The native package will be overriden by the python package.
-
 ENV HADOOP_HOME=/opt/hadoop
 ENV PATH=${PATH}:${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin \
     HDFS_NAMENODE_USER=root \
@@ -346,23 +347,13 @@ ENV PATH=${PATH}:${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin \
 /opt/hadoop/share/hadoop/yarn/*:\
 /opt/hadoop/share/hadoop/yarn/lib/*
 
-COPY install-hadoop.sh install-hadoop.sh
-RUN if [[ "${BUILD_HADOOP}" == "true" ]]; then \
-        git clone --branch rel/release-${HADOOP_VER} --depth 1 https://github.com/apache/hadoop.git hadoop && \
-        cd hadoop && \
-        # Temporarily adjust name resolution for jboss repository. NVIDIA IT ticket number: "INC0866408"
-        if [[ ! $(curl --connect-timeout 5 repository.jboss.org) ]] 2>/dev/null; then \
-            echo "Unable to connect to repository.jboss.org. Disabling..." && \
-            echo '127.0.0.1 repository.jboss.org' >> /etc/hosts \
-        ; fi && \
-        mvn clean package -Pdist,native -DskipTests -Dtar -Dmaven.javadoc.skip=true \
-            -Drequire.snappy -Drequire.zstd -Drequire.openssl -Drequire.pmdk && \
-        mv hadoop-dist/target/hadoop-${HADOOP_VER}.tar.gz .. && \
-        cd .. && \
-        rm -rf hadoop /root/.m2 \
+# TODO: There is a potential conflict with protocol buffers. The native package will be overriden by the python package.
+COPY *-hadoop.sh ./
+RUN if [[ "${BUILD_HADOOP}" == "true" || "${INSTALL_HDFS_CLIENT}" == "true" ]]; then \
+        ./build-hadoop.sh "${HADOOP_VER}" \
     ; fi && \
     if [[ "${INSTALL_HDFS_CLIENT}" == "true" ]]; then \
-        ./install-hadoop.sh \
+        ./install-hadoop.sh "${HADOOP_VER}" \
     ; fi
 
 
@@ -427,7 +418,8 @@ RUN git clone --branch ${NVTAB_BACKEND_VER} --depth 1 https://github.com/NVIDIA-
     cd nvt_backend/build && \
     # TODO: This could cause compatibility issues. Need to establish a way to check earlier.
     python -m pip install --disable-pip-version-check pybind11 && \
-    cmake -Dpybind11_DIR=/usr/local/lib/python3.8/dist-packages/pybind11/share/cmake/pybind11 \
+    cmake \
+        -Dpybind11_DIR=/usr/local/lib/python3.8/dist-packages/pybind11/share/cmake/pybind11 \
         -D TRITON_COMMON_REPO_TAG="r${TRITON_VERSION}"    \
         -D TRITON_CORE_REPO_TAG="r${TRITON_VERSION}"      \
         -D TRITON_BACKEND_REPO_TAG="r${TRITON_VERSION}" .. && \
@@ -465,9 +457,8 @@ RUN if [[ "${HUGECTR_DEV_MODE}" == "false" ]]; then \
         make install && \
         chmod +x ${HUGECTR_HOME}/bin/* && \
         chmod +x ${HUGECTR_HOME}/lib/*.so && \
-        cd ../.. \
-        #&& \
-        #rm -rf hugectr \
+        cd ../.. && \
+        rm -rf hugectr \
     ; fi
 
 ENV PATH=$PATH:${HUGECTR_HOME}/bin \
@@ -475,8 +466,7 @@ ENV PATH=$PATH:${HUGECTR_HOME}/bin \
     PYTHONPATH=${PYTHONPATH}:${HUGECTR_HOME}/lib \
     CPATH=${CPATH}:${HUGECTR_HOME}/include
 
-RUN rm -rf hugectr && \
-    if [ "${HUGECTR_DEV_MODE}" == "false" ]; then \
+RUN if [ "${HUGECTR_DEV_MODE}" == "false" ]; then \
         git clone --branch ${HUGECTR_BACKEND_VER} --depth 1 https://${_CI_JOB_TOKEN}${_HUGECTR_BACKEND_REPO} hugectr_triton_backend && \
         mkdir hugectr_triton_backend/build && \
         cd hugectr_triton_backend/build && \
@@ -486,7 +476,11 @@ RUN rm -rf hugectr && \
             -DTRITON_CORE_REPO_TAG="r${TRITON_VERSION}" \
             -DTRITON_BACKEND_REPO_TAG="r${TRITON_VERSION}" .. && \
         make -j$(nproc) && \
-        make install \
+        make install && \
+        chmod +x ${HUGECTR_HOME}/lib/*.so ${HUGECTR_HOME}/backends/hugectr/*.so && \
+        ln -s ${HUGECTR_HOME}/backends/hugectr /opt/tritonserver/backends/hugectr && \
+        cd ../.. && \
+        rm -rf hugectr_triton_backend \
     ; fi
 
 

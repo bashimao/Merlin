@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+if [[ "$#" != 1 ]]; then
+  echo "ERROR: Must provide Hadoop version number!"
+  echo "       Example: ${BASH_SOURCE[0]} \"3.3.2\""
+  exit 1
+fi
+HADOOP_VER="$1"
+
 SCRIPT_DIR=$(dirname ${BASH_SOURCE[0]})
 cd ${SCRIPT_DIR}
 
