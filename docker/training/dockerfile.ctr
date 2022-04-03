@@ -19,7 +19,7 @@ ARG CMAKE_VER=3.22.3 \
 
 ARG INSTALL_HDFS=true \
     BUILD_HADOOP=true
-    
+
 
 
 # -----------------------------------------------------------------------------
@@ -169,14 +169,14 @@ ENV PATH=${PATH}:${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin \
     # Tackles with JVM setting error signals that UCX library will check (GitLab issue #425).
     UCX_ERROR_SIGNALS='' \
     CLASSPATH=${CLASSPATH}:\
-/opt/hadoop/etc/hadoop/*:\
-/opt/hadoop/share/hadoop/common/*:\
-/opt/hadoop/share/hadoop/common/lib/*:\
-/opt/hadoop/share/hadoop/hdfs/*:\
-/opt/hadoop/share/hadoop/hdfs/lib/*:\
-/opt/hadoop/share/hadoop/mapreduce/*:\
-/opt/hadoop/share/hadoop/yarn/*:\
-/opt/hadoop/share/hadoop/yarn/lib/*
+${HADOOP_HOME}/etc/hadoop/*:\
+${HADOOP_HOME}/share/hadoop/common/*:\
+${HADOOP_HOME}/share/hadoop/common/lib/*:\
+${HADOOP_HOME}/share/hadoop/hdfs/*:\
+${HADOOP_HOME}/share/hadoop/hdfs/lib/*:\
+${HADOOP_HOME}/share/hadoop/mapreduce/*:\
+${HADOOP_HOME}/share/hadoop/yarn/*:\
+${HADOOP_HOME}/share/hadoop/yarn/lib/*
 
 # TODO: There is a potential conflict with protocol buffers. The native package will be overriden by the python package.
 COPY *-hadoop.sh ./
