@@ -27,9 +27,6 @@ ENV CUDA_CUDA_LIBRARY=${CUDA_HOME}/lib64/stubs
 ENV PATH=${CUDA_HOME}/lib64/:${PATH}:${CUDA_HOME}/bin
 ENV PYTHONPATH=/usr/lib/python3.8/site-packages:$PYTHONPATH
 
-# Copy files into the container
-COPY *-hadoop.sh ./
-
 # Install system packages
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -317,7 +314,10 @@ ${HADOOP_HOME}/share/hadoop/mapreduce/*:\
 ${HADOOP_HOME}/share/hadoop/yarn/*:\
 ${HADOOP_HOME}/share/hadoop/yarn/lib/*
 
-RUN if [[ "${INSTALL_HDFS}" == "true" || "${BUILD_HADOOP}" == "true" ]]; then \
+RUN wget https://raw.githubusercontent.com/NVIDIA-Merlin/HugeCTR/master/sbin/build-hadoop.sh && \
+    wget https://raw.githubusercontent.com/NVIDIA-Merlin/HugeCTR/master/sbin/install-hadoop.sh && \
+    chmod +x *-hadoop.sh && \
+    if [[ "${INSTALL_HDFS}" == "true" || "${BUILD_HADOOP}" == "true" ]]; then \
         ./build-hadoop.sh "${HADOOP_VER}" \
     ; fi && \
     if [[ "${INSTALL_HDFS}" == "true" ]]; then \

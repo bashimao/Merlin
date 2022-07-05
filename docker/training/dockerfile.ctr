@@ -21,9 +21,6 @@ ENV PATH=${CUDA_HOME}/lib64/:${PATH}:${CUDA_HOME}/bin
 ENV PATH=$PATH:/usr/lib/x86_64-linux-gnu/
 RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
-# Copy files into the container
-COPY *-hadoop.sh ./
-
 # Install system packages
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -200,7 +197,11 @@ ${HADOOP_HOME}/share/hadoop/mapreduce/*:\
 ${HADOOP_HOME}/share/hadoop/yarn/*:\
 ${HADOOP_HOME}/share/hadoop/yarn/lib/*
 
-RUN if [[ "${INSTALL_HDFS}" == "true" || "${BUILD_HADOOP}" == "true" ]]; then \
+# Copy files into the container
+RUN wget https://raw.githubusercontent.com/NVIDIA-Merlin/HugeCTR/master/sbin/build-hadoop.sh && \
+    wget https://raw.githubusercontent.com/NVIDIA-Merlin/HugeCTR/master/sbin/install-hadoop.sh && \
+    chmod +x *-hadoop.sh && \
+    if [[ "${INSTALL_HDFS}" == "true" || "${BUILD_HADOOP}" == "true" ]]; then \
         ./build-hadoop.sh "${HADOOP_VER}" \
     ; fi && \
     if [[ "${INSTALL_HDFS}" == "true" ]]; then \
